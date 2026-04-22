@@ -5,11 +5,254 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pomodoro Focus Tracker</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='75'>🍅</text></svg>">
+    
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
     
-    <!-- ONLY Firebase Script - UMD Build -->
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase.js"></script>
-    
+    <!-- Firebase SDK v9+ (Modular) -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        // Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyApJ8MJ4NTDt5CDqDsVRUSv5_urt2TbtFI",
+            authDomain: "mypomo-e2622.firebaseapp.com",
+            projectId: "mypomo-e2622",
+            storageBucket: "mypomo-e2622.appspot.com",
+            messagingSenderId: "1082968451105",
+            appId: "1:1082968451105:web:5f4dd2bd38213d1bd21b60"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+
+        // Configuration
+        const WORK_DURATION = 25;
+        const BREAK_DURATION = 5;
+
+        let state = {
+            isRunning: false,
+            timeRemaining: WORK_DURATION * 60,
+            isWorkSession: true,
+            firebaseReady: false,
+            userId: null,
+            timerInterval: null
+        };
+
+        // Initialize Firebase Auth
+        async function initializeFirebase() {
+            try {
+                const result = await signInAnonymously(auth);
+                state.userId = result.user.uid;
+                state.firebaseReady = true;
+                document.getElementById('syncStatus').textContent = '✓ Synced';
+                document.getElementById('syncStatus').className = 'sync-status connected';
+                await loadTodaySessions();
+                setupRealtimeListener();
+            } catch (error) {
+                console.error('Firebase error:', error);
+                document.getElementById('syncStatus').textContent = '✗ Offline';
+            }
+        }
+
+        // Timer Functions
+        function updateTimerDisplay() {
+            const minutes = Math.floor(state.timeRemaining / 60);
+            const seconds = state.timeRemaining % 60;
+            document.getElementById('timerDisplay').textContent = 
+                `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function startTimer() {
+            if (state.isRunning) return;
+            
+            state.isRunning = true;
+            document.getElementById('startBtn').style.display = 'none';
+            document.getElementById('pauseBtn').style.display = 'block';
+            document.body.classList.add('focusing');
+
+            state.timerInterval = setInterval(() => {
+                state.timeRemaining--;
+                updateTimerDisplay();
+
+                if (state.timeRemaining <= 0) {
+                    completeSession();
+                }
+            }, 1000);
+        }
+
+        function pauseTimer() {
+            state.isRunning = false;
+            clearInterval(state.timerInterval);
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('pauseBtn').style.display = 'none';
+            document.body.classList.remove('focusing');
+        }
+
+        function resetTimer() {
+            pauseTimer();
+            state.isWorkSession = true;
+            state.timeRemaining = WORK_DURATION * 60;
+            updateTimerDisplay();
+            document.getElementById('sessionType').textContent = 'Work Session';
+        }
+
+        async function completeSession() {
+            pauseTimer();
+            
+            const label = document.getElementById('sessionLabel').value || 'Untitled';
+            const category = document.getElementById('sessionCategory').value;
+            const duration = state.isWorkSession ? WORK_DURATION : BREAK_DURATION;
+
+            await saveSession(label, category, duration);
+
+            showNotification(`✓ ${duration} min session completed!`);
+
+            state.isWorkSession = !state.isWorkSession;
+            state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+            document.getElementById('sessionType').textContent = 
+                state.isWorkSession ? 'Work Session' : 'Break Time';
+            
+            updateTimerDisplay();
+            document.getElementById('sessionLabel').value = '';
+        }
+
+        async function saveSession(label, category, duration) {
+            if (!state.firebaseReady) return;
+            try {
+                await addDoc(collection(db, 'sessions'), {
+                    userId: state.userId,
+                    label: label,
+                    category: category,
+                    durationMinutes: duration,
+                    completedAt: new Date()
+                });
+                await loadTodaySessions();
+            } catch (error) {
+                console.error('Error saving session:', error);
+            }
+        }
+
+        async function loadTodaySessions() {
+            if (!state.firebaseReady) return;
+            try {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                
+                const q = query(
+                    collection(db, 'sessions'),
+                    where('userId', '==', state.userId),
+                    where('completedAt', '>=', today),
+                    orderBy('completedAt', 'desc')
+                );
+
+                const snapshot = await getDocs(q);
+                const sessions = [];
+                snapshot.forEach(doc => {
+                    sessions.push({ id: doc.id, ...doc.data() });
+                });
+
+                displaySessions(sessions);
+                updateStats(sessions);
+                return sessions;
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+            }
+        }
+
+        function displaySessions(sessions) {
+            const container = document.getElementById('historyList');
+            
+            if (sessions.length === 0) {
+                container.innerHTML = '<div class="history-empty">No sessions yet</div>';
+                return;
+            }
+
+            container.innerHTML = sessions.map(session => {
+                const time = session.completedAt.toDate().toLocaleTimeString();
+                return `
+                    <div class="history-item">
+                        <div class="history-item-info">
+                            <div class="history-item-label">${session.label}</div>
+                            <div class="history-item-time">${time}</div>
+                        </div>
+                        <div class="history-item-duration">${session.durationMinutes}m</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateStats(sessions) {
+            const totalSessions = sessions.length;
+            const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+            
+            const categoryCount = {};
+            sessions.forEach(s => {
+                categoryCount[s.category] = (categoryCount[s.category] || 0) + 1;
+            });
+            
+            const topCategory = Object.keys(categoryCount).length > 0
+                ? Object.keys(categoryCount).reduce((a, b) => 
+                    categoryCount[a] > categoryCount[b] ? a : b)
+                : '—';
+
+            document.getElementById('totalSessions').textContent = totalSessions;
+            document.getElementById('totalMinutes').textContent = totalMinutes;
+            document.getElementById('topCategory').textContent = topCategory.toUpperCase();
+        }
+
+        function setupRealtimeListener() {
+            if (!state.firebaseReady) return;
+            
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            const q = query(
+                collection(db, 'sessions'),
+                where('userId', '==', state.userId),
+                where('completedAt', '>=', today)
+            );
+
+            onSnapshot(q, (snapshot) => {
+                loadTodaySessions();
+            });
+        }
+
+        function showNotification(message) {
+            const notif = document.createElement('div');
+            notif.className = 'notification';
+            notif.textContent = message;
+            document.body.appendChild(notif);
+            setTimeout(() => notif.remove(), 3000);
+        }
+
+        // Event Listeners
+        document.getElementById('startBtn').addEventListener('click', startTimer);
+        document.getElementById('pauseBtn').addEventListener('click', pauseTimer);
+        document.getElementById('resetBtn').addEventListener('click', resetTimer);
+
+        // Tab Navigation
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                e.target.classList.add('active');
+                const tabId = e.target.dataset.tab;
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+
+        // Initialize
+        initializeFirebase();
+        updateTimerDisplay();
+    </script>
+
     <style>
         * {
             margin: 0;
@@ -247,15 +490,6 @@
             border-color: #a99878;
         }
 
-        .btn-danger {
-            background: #f44336;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #da190b;
-        }
-
         .stats-section {
             background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
             padding: 28px;
@@ -378,83 +612,6 @@
             font-size: 14px;
         }
 
-        .analytics-section {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 28px;
-        }
-
-        .analytics-controls {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .time-period-btn {
-            padding: 10px 20px;
-            background: rgba(169, 152, 120, 0.08);
-            border: 1.5px solid rgba(169, 152, 120, 0.2);
-            color: #8b7355;
-            border-radius: 10px;
-            cursor: pointer;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 11px;
-            transition: all 0.3s;
-            letter-spacing: 0.5px;
-        }
-
-        .time-period-btn:hover {
-            border-color: #a99878;
-            background: rgba(169, 152, 120, 0.12);
-        }
-
-        .time-period-btn.active {
-            background: #a99878;
-            color: #ffffff;
-            box-shadow: 0 4px 12px rgba(169, 152, 120, 0.2);
-        }
-
-        .chart-wrapper {
-            background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
-            padding: 28px;
-            border-radius: 16px;
-            border: 1px solid rgba(169, 152, 120, 0.15);
-        }
-
-        .chart-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: #8b7355;
-            text-transform: uppercase;
-            margin-bottom: 20px;
-            letter-spacing: 1.2px;
-        }
-
-        .chart-canvas {
-            position: relative;
-            height: 320px;
-        }
-
-        .history-list::-webkit-scrollbar {
-            width: 6px;
-        }
-
-        .history-list::-webkit-scrollbar-track {
-            background: rgba(169, 152, 120, 0.05);
-            border-radius: 10px;
-        }
-
-        .history-list::-webkit-scrollbar-thumb {
-            background: rgba(169, 152, 120, 0.25);
-            border-radius: 10px;
-        }
-
-        .history-list::-webkit-scrollbar-thumb:hover {
-            background: rgba(169, 152, 120, 0.4);
-        }
-
         .notification {
             position: fixed;
             top: 20px;
@@ -520,7 +677,6 @@
         <div class="tabs">
             <button class="tab-btn active" data-tab="timer">Timer</button>
             <button class="tab-btn" data-tab="today">Today</button>
-            <button class="tab-btn" data-tab="analytics">Analytics</button>
         </div>
 
         <div id="timer" class="tab-content active">
@@ -575,282 +731,6 @@
                 </div>
             </div>
         </div>
-
-        <div id="analytics" class="tab-content">
-            <div class="analytics-controls">
-                <button class="time-period-btn active" data-period="daily">Daily</button>
-                <button class="time-period-btn" data-period="weekly">Weekly</button>
-                <button class="time-period-btn" data-period="monthly">Monthly</button>
-            </div>
-
-            <div class="chart-wrapper">
-                <div class="chart-title">Time by Category</div>
-                <div class="chart-canvas">
-                    <canvas id="categoryChart"></canvas>
-                </div>
-            </div>
-
-            <div class="chart-wrapper">
-                <div class="chart-title">Daily Comparison</div>
-                <div class="chart-canvas">
-                    <canvas id="comparisonChart"></canvas>
-                </div>
-            </div>
-        </div>
     </div>
-
-
-	<script>
-		// Wait for Firebase to load
-		function initApp() {
-			// Firebase Config
-			const firebaseConfig = {
-				apiKey: "AIzaSyApJ8MJ4NTDt5CDqDsVRUSv5_urt2TbtFI",
-				authDomain: "mypomo-e2622.firebaseapp.com",
-				projectId: "mypomo-e2622",
-				storageBucket: "mypomo-e2622.appspot.com",
-				messagingSenderId: "1082968451105",
-				appId: "1:1082968451105:web:5f4dd2bd38213d1bd21b60"
-			};
-
-			// Initialize Firebase
-			firebase.initializeApp(firebaseConfig);
-			const db = firebase.firestore();
-			const auth = firebase.auth();
-
-			// Configuration
-			const WORK_DURATION = 25;
-			const BREAK_DURATION = 5;
-			const LONG_BREAK_DURATION = 15;
-
-			let state = {
-				isRunning: false,
-				timeRemaining: WORK_DURATION * 60,
-				isWorkSession: true,
-				sessionCount: 0,
-				firebaseReady: false,
-				userId: null,
-				currentTimePeriod: 'daily',
-				timerInterval: null
-			};
-
-			// Initialize Firebase Auth
-			async function initializeFirebase() {
-				try {
-					await auth.signInAnonymously();
-					state.userId = auth.currentUser.uid;
-					state.firebaseReady = true;
-					document.getElementById('syncStatus').textContent = '✓ Synced';
-					document.getElementById('syncStatus').className = 'sync-status connected';
-					await loadTodaySessions();
-					setupRealtimeListener();
-				} catch (error) {
-					console.error('Firebase error:', error);
-					document.getElementById('syncStatus').textContent = '✗ Offline';
-				}
-			}
-
-			// Timer Functions
-			function updateTimerDisplay() {
-				const minutes = Math.floor(state.timeRemaining / 60);
-				const seconds = state.timeRemaining % 60;
-				document.getElementById('timerDisplay').textContent = 
-					`${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-			}
-
-			function startTimer() {
-				if (state.isRunning) return;
-				
-				state.isRunning = true;
-				document.getElementById('startBtn').style.display = 'none';
-				document.getElementById('pauseBtn').style.display = 'block';
-				document.body.classList.add('focusing');
-
-				state.timerInterval = setInterval(() => {
-					state.timeRemaining--;
-					updateTimerDisplay();
-
-					if (state.timeRemaining <= 0) {
-						completeSession();
-					}
-				}, 1000);
-			}
-
-			function pauseTimer() {
-				state.isRunning = false;
-				clearInterval(state.timerInterval);
-				document.getElementById('startBtn').style.display = 'block';
-				document.getElementById('pauseBtn').style.display = 'none';
-				document.body.classList.remove('focusing');
-			}
-
-			function resetTimer() {
-				pauseTimer();
-				state.isWorkSession = true;
-				state.timeRemaining = WORK_DURATION * 60;
-				updateTimerDisplay();
-				document.getElementById('sessionType').textContent = 'Work Session';
-			}
-
-			async function completeSession() {
-				pauseTimer();
-				
-				const label = document.getElementById('sessionLabel').value || 'Untitled';
-				const category = document.getElementById('sessionCategory').value;
-				const duration = state.isWorkSession ? WORK_DURATION : BREAK_DURATION;
-
-				await saveSession(label, category, duration);
-
-				showNotification(`✓ ${duration} min session completed!`);
-
-				// Switch to break
-				state.isWorkSession = !state.isWorkSession;
-				state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
-				document.getElementById('sessionType').textContent = 
-					state.isWorkSession ? 'Work Session' : 'Break Time';
-				
-				updateTimerDisplay();
-				document.getElementById('sessionLabel').value = '';
-			}
-
-			async function saveSession(label, category, duration) {
-				if (!state.firebaseReady) return;
-				try {
-					await db.collection('sessions').add({
-						userId: state.userId,
-						label: label,
-						category: category,
-						durationMinutes: duration,
-						completedAt: new Date()
-					});
-					await loadTodaySessions();
-					await updateAnalytics();
-				} catch (error) {
-					console.error('Error saving session:', error);
-				}
-			}
-
-			async function loadTodaySessions() {
-				if (!state.firebaseReady) return;
-				try {
-					const today = new Date();
-					today.setHours(0, 0, 0, 0);
-					
-					const snapshot = await db.collection('sessions')
-						.where('userId', '==', state.userId)
-						.where('completedAt', '>=', today)
-						.orderBy('completedAt', 'desc')
-						.get();
-
-					const sessions = [];
-					snapshot.forEach(doc => {
-						sessions.push({ id: doc.id, ...doc.data() });
-					});
-
-					displaySessions(sessions);
-					updateStats(sessions);
-					return sessions;
-				} catch (error) {
-					console.error('Error loading sessions:', error);
-				}
-			}
-
-			function displaySessions(sessions) {
-				const container = document.getElementById('historyList');
-				
-				if (sessions.length === 0) {
-					container.innerHTML = '<div class="history-empty">No sessions yet</div>';
-					return;
-				}
-
-				container.innerHTML = sessions.map(session => {
-					const time = session.completedAt.toDate().toLocaleTimeString();
-					return `
-						<div class="history-item">
-							<div class="history-item-info">
-								<div class="history-item-label">${session.label}</div>
-								<div class="history-item-time">${time}</div>
-							</div>
-							<div class="history-item-duration">${session.durationMinutes}m</div>
-						</div>
-					`;
-				}).join('');
-			}
-
-			function updateStats(sessions) {
-				const totalSessions = sessions.length;
-				const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
-				
-				const categoryCount = {};
-				sessions.forEach(s => {
-					categoryCount[s.category] = (categoryCount[s.category] || 0) + 1;
-				});
-				
-				const topCategory = Object.keys(categoryCount).length > 0
-					? Object.keys(categoryCount).reduce((a, b) => 
-						categoryCount[a] > categoryCount[b] ? a : b)
-					: '—';
-
-				document.getElementById('totalSessions').textContent = totalSessions;
-				document.getElementById('totalMinutes').textContent = totalMinutes;
-				document.getElementById('topCategory').textContent = topCategory.toUpperCase();
-			}
-
-			function setupRealtimeListener() {
-				if (!state.firebaseReady) return;
-				
-				const today = new Date();
-				today.setHours(0, 0, 0, 0);
-
-				db.collection('sessions')
-					.where('userId', '==', state.userId)
-					.where('completedAt', '>=', today)
-					.onSnapshot(snapshot => {
-						loadTodaySessions();
-					});
-			}
-
-			async function updateAnalytics() {
-				// Placeholder for analytics updates
-			}
-
-			function showNotification(message) {
-				const notif = document.createElement('div');
-				notif.className = 'notification';
-				notif.textContent = message;
-				document.body.appendChild(notif);
-				setTimeout(() => notif.remove(), 3000);
-			}
-
-			// Event Listeners
-			document.getElementById('startBtn').addEventListener('click', startTimer);
-			document.getElementById('pauseBtn').addEventListener('click', pauseTimer);
-			document.getElementById('resetBtn').addEventListener('click', resetTimer);
-
-			// Tab Navigation
-			document.querySelectorAll('.tab-btn').forEach(btn => {
-				btn.addEventListener('click', (e) => {
-					document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-					document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-					
-					e.target.classList.add('active');
-					const tabId = e.target.dataset.tab;
-					document.getElementById(tabId).classList.add('active');
-				});
-			});
-
-			// Initialize
-			initializeFirebase();
-			updateTimerDisplay();
-		}
-
-		// Wait for Firebase to load, then start the app
-		if (document.readyState === 'loading') {
-			document.addEventListener('DOMContentLoaded', initApp);
-		} else {
-			initApp();
-		}
-	</script>
-
 </body>
 </html>
