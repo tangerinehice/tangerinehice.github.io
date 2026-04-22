@@ -41,18 +41,28 @@
             isWorkSession: true,
             firebaseReady: false,
             userId: null,
-            timerInterval: null
+            timerInterval: null,
+            sessionStartTime: null,
+            sessionPausedTime: 0
         };
 
-        // Initialize Firebase Auth
+        let chartInstance = null;
+
+        // Initialize Firebase Auth with Shared User ID
         async function initializeFirebase() {
             try {
-                const result = await signInAnonymously(auth);
-                state.userId = result.user.uid;
+                // Get or create a shared user ID (stored locally)
+                let sharedUserId = localStorage.getItem('pomodoroUserId');
+                if (!sharedUserId) {
+                    sharedUserId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                    localStorage.setItem('pomodoroUserId', sharedUserId);
+                }
+                state.userId = sharedUserId;
                 state.firebaseReady = true;
                 document.getElementById('syncStatus').textContent = '✓ Synced';
                 document.getElementById('syncStatus').className = 'sync-status connected';
                 await loadTodaySessions();
+                await loadAllSessions();
                 setupRealtimeListener();
             } catch (error) {
                 console.error('Firebase error:', error);
@@ -60,7 +70,7 @@
             }
         }
 
-        // Timer Functions
+        // Timer Functions - Fixed to track actual elapsed time
         function updateTimerDisplay() {
             const minutes = Math.floor(state.timeRemaining / 60);
             const seconds = state.timeRemaining % 60;
@@ -72,23 +82,29 @@
             if (state.isRunning) return;
             
             state.isRunning = true;
+            state.sessionStartTime = Date.now() - (state.sessionPausedTime * 1000);
             document.getElementById('startBtn').style.display = 'none';
             document.getElementById('pauseBtn').style.display = 'block';
             document.body.classList.add('focusing');
 
             state.timerInterval = setInterval(() => {
-                state.timeRemaining--;
+                const elapsedSeconds = Math.floor((Date.now() - state.sessionStartTime) / 1000);
+                const sessionDuration = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+                state.timeRemaining = Math.max(0, sessionDuration - elapsedSeconds);
+                
                 updateTimerDisplay();
 
                 if (state.timeRemaining <= 0) {
                     completeSession();
                 }
-            }, 1000);
+            }, 100); // Update more frequently for accuracy
         }
 
         function pauseTimer() {
             state.isRunning = false;
             clearInterval(state.timerInterval);
+            const elapsedSeconds = Math.floor((Date.now() - state.sessionStartTime) / 1000);
+            state.sessionPausedTime = elapsedSeconds;
             document.getElementById('startBtn').style.display = 'block';
             document.getElementById('pauseBtn').style.display = 'none';
             document.body.classList.remove('focusing');
@@ -98,6 +114,8 @@
             pauseTimer();
             state.isWorkSession = true;
             state.timeRemaining = WORK_DURATION * 60;
+            state.sessionStartTime = null;
+            state.sessionPausedTime = 0;
             updateTimerDisplay();
             document.getElementById('sessionType').textContent = 'Work Session';
         }
@@ -113,8 +131,11 @@
 
             showNotification(`✓ ${duration} min session completed!`);
 
+            // Switch to break
             state.isWorkSession = !state.isWorkSession;
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+            state.sessionStartTime = null;
+            state.sessionPausedTime = 0;
             document.getElementById('sessionType').textContent = 
                 state.isWorkSession ? 'Work Session' : 'Break Time';
             
@@ -133,6 +154,7 @@
                     completedAt: new Date()
                 });
                 await loadTodaySessions();
+                await loadAllSessions();
             } catch (error) {
                 console.error('Error saving session:', error);
             }
@@ -162,6 +184,32 @@
                 return sessions;
             } catch (error) {
                 console.error('Error loading sessions:', error);
+            }
+        }
+
+        async function loadAllSessions() {
+            if (!state.firebaseReady) return;
+            try {
+                const last30Days = new Date();
+                last30Days.setDate(last30Days.getDate() - 30);
+                
+                const q = query(
+                    collection(db, 'sessions'),
+                    where('userId', '==', state.userId),
+                    where('completedAt', '>=', last30Days),
+                    orderBy('completedAt', 'desc')
+                );
+
+                const snapshot = await getDocs(q);
+                const sessions = [];
+                snapshot.forEach(doc => {
+                    sessions.push({ id: doc.id, ...doc.data() });
+                });
+
+                updateCharts(sessions);
+                return sessions;
+            } catch (error) {
+                console.error('Error loading all sessions:', error);
             }
         }
 
@@ -206,6 +254,173 @@
             document.getElementById('topCategory').textContent = topCategory.toUpperCase();
         }
 
+        function updateCharts(sessions) {
+            // Category Pie Chart
+            const categoryCount = {};
+            sessions.forEach(s => {
+                categoryCount[s.category] = (categoryCount[s.category] || 0) + s.durationMinutes;
+            });
+
+            const categoryCtx = document.getElementById('categoryChart');
+            if (categoryCtx) {
+                if (chartInstance) {
+                    chartInstance.destroy();
+                }
+                chartInstance = new Chart(categoryCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: Object.keys(categoryCount),
+                        datasets: [{
+                            data: Object.values(categoryCount),
+                            backgroundColor: [
+                                '#a99878',
+                                '#8b7355',
+                                '#c4b5a0',
+                                '#9a8968',
+                                '#b8a890'
+                            ],
+                            borderColor: '#ffffff',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    color: '#8b7355',
+                                    font: { size: 12 },
+                                    padding: 15
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Weekly Comparison
+            const weeklyData = getWeeklyData(sessions);
+            updateWeeklyChart(weeklyData);
+
+            // Monthly Comparison
+            const monthlyData = getMonthlyData(sessions);
+            updateMonthlyChart(monthlyData);
+        }
+
+        function getWeeklyData(sessions) {
+            const data = {};
+            const today = new Date();
+            
+            for (let i = 6; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                const dateStr = date.toLocaleDateString('en-US', { weekday: 'short' });
+                data[dateStr] = 0;
+            }
+
+            sessions.forEach(s => {
+                const sessionDate = s.completedAt.toDate();
+                const dateStr = sessionDate.toLocaleDateString('en-US', { weekday: 'short' });
+                if (data.hasOwnProperty(dateStr)) {
+                    data[dateStr] += s.durationMinutes;
+                }
+            });
+
+            return data;
+        }
+
+        function updateWeeklyChart(data) {
+            const ctx = document.getElementById('weeklyChart');
+            if (ctx && window.weeklyChart) {
+                window.weeklyChart.destroy();
+            }
+            if (ctx) {
+                window.weeklyChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: Object.keys(data),
+                        datasets: [{
+                            label: 'Minutes',
+                            data: Object.values(data),
+                            backgroundColor: '#a99878',
+                            borderColor: '#8b7355',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            y: { beginAtZero: true, ticks: { color: '#8b7355' } },
+                            x: { ticks: { color: '#8b7355' } }
+                        },
+                        plugins: {
+                            legend: { labels: { color: '#8b7355' } }
+                        }
+                    }
+                });
+            }
+        }
+
+        function getMonthlyData(sessions) {
+            const data = {};
+            const today = new Date();
+            
+            for (let i = 29; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                data[dateStr] = 0;
+            }
+
+            sessions.forEach(s => {
+                const sessionDate = s.completedAt.toDate();
+                const dateStr = sessionDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                if (data.hasOwnProperty(dateStr)) {
+                    data[dateStr] += s.durationMinutes;
+                }
+            });
+
+            return data;
+        }
+
+        function updateMonthlyChart(data) {
+            const ctx = document.getElementById('monthlyChart');
+            if (ctx && window.monthlyChart) {
+                window.monthlyChart.destroy();
+            }
+            if (ctx) {
+                window.monthlyChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: Object.keys(data),
+                        datasets: [{
+                            label: 'Minutes',
+                            data: Object.values(data),
+                            borderColor: '#a99878',
+                            backgroundColor: 'rgba(169, 152, 120, 0.1)',
+                            borderWidth: 2,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        scales: {
+                            y: { beginAtZero: true, ticks: { color: '#8b7355' } },
+                            x: { ticks: { color: '#8b7355' } }
+                        },
+                        plugins: {
+                            legend: { labels: { color: '#8b7355' } }
+                        }
+                    }
+                });
+            }
+        }
+
         function setupRealtimeListener() {
             if (!state.firebaseReady) return;
             
@@ -220,6 +435,7 @@
 
             onSnapshot(q, (snapshot) => {
                 loadTodaySessions();
+                loadAllSessions();
             });
         }
 
@@ -288,7 +504,7 @@
             backdrop-filter: blur(10px);
             border-radius: 24px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08), 0 0 60px rgba(169, 152, 120, 0.06);
-            max-width: 600px;
+            max-width: 700px;
             width: 100%;
             padding: 35px;
             border: 1px solid rgba(169, 152, 120, 0.12);
@@ -511,6 +727,7 @@
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
             gap: 14px;
+            margin-bottom: 20px;
         }
 
         .stat-card {
@@ -542,6 +759,25 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
             font-weight: 300;
+        }
+
+        .chart-container {
+            background: rgba(255, 255, 255, 0.6);
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(169, 152, 120, 0.12);
+            position: relative;
+            height: 300px;
+        }
+
+        .chart-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #8b7355;
+            text-transform: uppercase;
+            margin-bottom: 15px;
+            letter-spacing: 1px;
         }
 
         .history-section {
@@ -648,6 +884,9 @@
             .stats-grid {
                 grid-template-columns: 1fr 1fr;
             }
+            .chart-container {
+                height: 250px;
+            }
         }
 
         @media (max-width: 480px) {
@@ -666,6 +905,9 @@
                 top: auto;
                 bottom: 20px;
             }
+            .chart-container {
+                height: 200px;
+            }
         }
     </style>
 </head>
@@ -677,6 +919,7 @@
         <div class="tabs">
             <button class="tab-btn active" data-tab="timer">Timer</button>
             <button class="tab-btn" data-tab="today">Today</button>
+            <button class="tab-btn" data-tab="analytics">Analytics</button>
         </div>
 
         <div id="timer" class="tab-content active">
@@ -704,8 +947,17 @@
                 </div>
             </div>
         </div>
-
+		
         <div id="today" class="tab-content">
+            <div class="history-section">
+                <div class="history-title">Today's Sessions</div>
+                <div class="history-list" id="historyList">
+                    <div class="history-empty">No sessions yet</div>
+                </div>
+            </div>
+        </div>
+		
+        <div id="analytics" class="tab-content">
             <div class="stats-section">
                 <div class="stats-title">Today's Stats</div>
                 <div class="stats-grid">
@@ -724,13 +976,28 @@
                 </div>
             </div>
 
-            <div class="history-section">
-                <div class="history-title">Recent Sessions</div>
-                <div class="history-list" id="historyList">
-                    <div class="history-empty">No sessions yet</div>
+            <div class="stats-section">
+                <div class="chart-title">Category Breakdown</div>
+                <div class="chart-container">
+                    <canvas id="categoryChart"></canvas>
+                </div>
+            </div>
+
+            <div class="stats-section">
+                <div class="chart-title">Weekly Comparison</div>
+                <div class="chart-container">
+                    <canvas id="weeklyChart"></canvas>
+                </div>
+            </div>
+
+            <div class="stats-section">
+                <div class="chart-title">Monthly Trend</div>
+                <div class="chart-container">
+                    <canvas id="monthlyChart"></canvas>
                 </div>
             </div>
         </div>
+
     </div>
 </body>
 </html>
