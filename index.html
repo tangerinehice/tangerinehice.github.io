@@ -12,9 +12,8 @@
     <!-- Firebase SDK v9+ (Modular) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getFirestore } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, query, where, orderBy, getDocs, onSnapshot, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // Firebase Config
         const firebaseConfig = {
@@ -26,12 +25,10 @@
             appId: "1:1082968451105:web:5f4dd2bd38213d1bd21b60"
         };
 
-        // Initialize Firebase
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
 
-        // Configuration
         const WORK_DURATION = 25;
         const BREAK_DURATION = 5;
 
@@ -43,34 +40,49 @@
             userId: null,
             timerInterval: null,
             sessionStartTime: null,
-            sessionPausedTime: 0,
-            sessionStartedAt: null
+            sessionPausedTime: 0
         };
 
         let chartInstances = {};
 
-        // Initialize Firebase Auth with Shared User ID
+        // Get or create shared user ID
+        function getSharedUserId() {
+            let userId = localStorage.getItem('pomodoroUserId');
+            if (!userId) {
+                userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                localStorage.setItem('pomodoroUserId', userId);
+                console.log('Created new user ID:', userId);
+            }
+            return userId;
+        }
+
+        // Initialize Firebase
         async function initializeFirebase() {
             try {
-                let sharedUserId = localStorage.getItem('pomodoroUserId');
-                if (!sharedUserId) {
-                    sharedUserId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-                    localStorage.setItem('pomodoroUserId', sharedUserId);
-                }
-                state.userId = sharedUserId;
+                state.userId = getSharedUserId();
+                console.log('Using user ID:', state.userId);
+                
+                await signInAnonymously(auth);
                 state.firebaseReady = true;
+                
                 document.getElementById('syncStatus').textContent = '✓ Synced';
                 document.getElementById('syncStatus').className = 'sync-status connected';
+                
+                // Load data
                 await loadTodaySessions();
                 await loadAllSessions();
+                
+                // Setup real-time listener
                 setupRealtimeListener();
+                
+                console.log('Firebase initialized successfully');
             } catch (error) {
-                console.error('Firebase error:', error);
+                console.error('Firebase init error:', error);
                 document.getElementById('syncStatus').textContent = '✗ Offline';
             }
         }
 
-        // Timer Functions - Fixed to track actual elapsed time
+        // Timer Functions
         function updateTimerDisplay() {
             const minutes = Math.floor(state.timeRemaining / 60);
             const seconds = state.timeRemaining % 60;
@@ -82,7 +94,6 @@
             if (state.isRunning) return;
             
             state.isRunning = true;
-            state.sessionStartedAt = new Date();
             state.sessionStartTime = Date.now() - (state.sessionPausedTime * 1000);
             document.getElementById('startBtn').style.display = 'none';
             document.getElementById('pauseBtn').style.display = 'block';
@@ -119,12 +130,10 @@
             state.timeRemaining = WORK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
-            state.sessionStartedAt = null;
             updateTimerDisplay();
             document.getElementById('sessionType').textContent = 'Work Session';
         }
 
-        // Auto-complete when timer reaches 0
         async function completeSessionAuto() {
             pauseTimer();
             
@@ -133,14 +142,12 @@
             const duration = state.isWorkSession ? WORK_DURATION : BREAK_DURATION;
 
             await saveSession(label, category, duration);
-
             showNotification(`✓ ${duration} min session completed!`);
 
             state.isWorkSession = !state.isWorkSession;
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
-            state.sessionStartedAt = null;
             document.getElementById('sessionType').textContent = 
                 state.isWorkSession ? 'Work Session' : 'Break Time';
             
@@ -148,7 +155,6 @@
             document.getElementById('sessionLabel').value = '';
         }
 
-        // Manual end session - records actual elapsed time
         async function endSessionManual() {
             if (!state.isRunning && !state.sessionPausedTime) return;
 
@@ -167,7 +173,6 @@
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
-            state.sessionStartedAt = null;
             document.getElementById('sessionType').textContent = 
                 state.isWorkSession ? 'Work Session' : 'Break Time';
             
@@ -175,35 +180,50 @@
             document.getElementById('sessionLabel').value = '';
         }
 
+        // Save session to Firebase
         async function saveSession(label, category, duration) {
-            if (!state.firebaseReady) return;
+            if (!state.firebaseReady) {
+                console.error('Firebase not ready');
+                return;
+            }
             try {
-                await addDoc(collection(db, 'sessions'), {
+                const docRef = await addDoc(collection(db, 'sessions'), {
                     userId: state.userId,
                     label: label,
                     category: category,
                     durationMinutes: duration,
                     completedAt: new Date()
                 });
-                await loadTodaySessions();
-                await loadAllSessions();
+                console.log('Session saved:', docRef.id);
+                
+                // Reload data immediately
+                setTimeout(() => {
+                    loadTodaySessions();
+                    loadAllSessions();
+                }, 500);
             } catch (error) {
                 console.error('Error saving session:', error);
             }
         }
 
+        // Delete session
         async function deleteSession(sessionId) {
             if (!state.firebaseReady) return;
             try {
                 await deleteDoc(doc(db, 'sessions', sessionId));
-                await loadTodaySessions();
-                await loadAllSessions();
+                console.log('Session deleted:', sessionId);
                 showNotification('✓ Session deleted');
+                
+                setTimeout(() => {
+                    loadTodaySessions();
+                    loadAllSessions();
+                }, 500);
             } catch (error) {
                 console.error('Error deleting session:', error);
             }
         }
 
+        // Load today's sessions
         async function loadTodaySessions() {
             if (!state.firebaseReady) return;
             try {
@@ -220,42 +240,54 @@
                 const snapshot = await getDocs(q);
                 const sessions = [];
                 snapshot.forEach(doc => {
-                    sessions.push({ id: doc.id, ...doc.data() });
+                    const data = doc.data();
+                    sessions.push({ 
+                        id: doc.id, 
+                        ...data,
+                        completedAt: data.completedAt.toDate()
+                    });
                 });
 
+                console.log('Today sessions loaded:', sessions.length);
                 displaySessions(sessions);
-                return sessions;
             } catch (error) {
-                console.error('Error loading sessions:', error);
+                console.error('Error loading today sessions:', error);
             }
         }
 
+        // Load all sessions (last 90 days)
         async function loadAllSessions() {
             if (!state.firebaseReady) return;
             try {
-                const last30Days = new Date();
-                last30Days.setDate(last30Days.getDate() - 30);
+                const last90Days = new Date();
+                last90Days.setDate(last90Days.getDate() - 90);
                 
                 const q = query(
                     collection(db, 'sessions'),
                     where('userId', '==', state.userId),
-                    where('completedAt', '>=', last30Days),
+                    where('completedAt', '>=', last90Days),
                     orderBy('completedAt', 'desc')
                 );
 
                 const snapshot = await getDocs(q);
                 const sessions = [];
                 snapshot.forEach(doc => {
-                    sessions.push({ id: doc.id, ...doc.data() });
+                    const data = doc.data();
+                    sessions.push({ 
+                        id: doc.id, 
+                        ...data,
+                        completedAt: data.completedAt.toDate()
+                    });
                 });
 
-                updateCharts(sessions);
-                return sessions;
+                console.log('All sessions loaded:', sessions.length);
+                updateAllCharts(sessions);
             } catch (error) {
                 console.error('Error loading all sessions:', error);
             }
         }
 
+        // Display today's sessions
         function displaySessions(sessions) {
             const container = document.getElementById('historyList');
             
@@ -265,7 +297,7 @@
             }
 
             container.innerHTML = sessions.map(session => {
-                const time = session.completedAt.toDate().toLocaleTimeString();
+                const time = session.completedAt.toLocaleTimeString();
                 return `
                     <div class="history-item">
                         <div class="history-item-info">
@@ -281,36 +313,47 @@
             }).join('');
         }
 
-        function updateCharts(sessions) {
-            // Day Pie Chart
-            const dayData = getCategoryDataForPeriod(sessions, 'day');
-            updatePieChart('dayChart', dayData, 'Today by Category');
-
-            // Week Pie Chart
-            const weekData = getCategoryDataForPeriod(sessions, 'week');
-            updatePieChart('weekChart', weekData, 'This Week by Category');
-
-            // Month Pie Chart
-            const monthData = getCategoryDataForPeriod(sessions, 'month');
-            updatePieChart('monthChart', monthData, 'This Month by Category');
+        // Update all charts
+        function updateAllCharts(sessions) {
+            console.log('Updating charts with', sessions.length, 'sessions');
+            
+            // Pie charts by category
+            updateCategoryPieCharts(sessions);
+            
+            // Bar charts by time period
+            updateTimeBarCharts(sessions);
         }
 
-        function getCategoryDataForPeriod(sessions, period) {
+        // Category Pie Charts (Daily, Weekly, Monthly)
+        function updateCategoryPieCharts(sessions) {
+            const dayData = getCategoryData(sessions, 'day');
+            const weekData = getCategoryData(sessions, 'week');
+            const monthData = getCategoryData(sessions, 'month');
+
+            updatePieChart('dayPieChart', dayData, 'Today by Category');
+            updatePieChart('weekPieChart', weekData, 'This Week by Category');
+            updatePieChart('monthPieChart', monthData, 'This Month by Category');
+        }
+
+        // Get category data for a time period
+        function getCategoryData(sessions, period) {
             const now = new Date();
             let startDate = new Date();
 
             if (period === 'day') {
                 startDate.setHours(0, 0, 0, 0);
             } else if (period === 'week') {
-                startDate.setDate(now.getDate() - now.getDay());
+                const day = now.getDay();
+                startDate.setDate(now.getDate() - day);
                 startDate.setHours(0, 0, 0, 0);
             } else if (period === 'month') {
                 startDate.setDate(1);
                 startDate.setHours(0, 0, 0, 0);
             }
 
-            const filtered = sessions.filter(s => s.completedAt.toDate() >= startDate);
+            const filtered = sessions.filter(s => s.completedAt >= startDate);
             const categoryCount = {};
+            
             filtered.forEach(s => {
                 categoryCount[s.category] = (categoryCount[s.category] || 0) + s.durationMinutes;
             });
@@ -318,6 +361,7 @@
             return categoryCount;
         }
 
+        // Update pie chart
         function updatePieChart(canvasId, data, title) {
             const ctx = document.getElementById(canvasId);
             if (!ctx) return;
@@ -326,9 +370,14 @@
                 chartInstances[canvasId].destroy();
             }
 
-            const colors = ['#a99878', '#8b7355', '#c4b5a0', '#9a8968', '#b8a890'];
+            const colors = ['#a99878', '#8b7355', '#c4b5a0', '#9a8968'];
             const labels = Object.keys(data);
             const values = Object.values(data);
+
+            if (labels.length === 0) {
+                ctx.parentElement.innerHTML = '<div class="chart-empty">No data</div>';
+                return;
+            }
 
             chartInstances[canvasId] = new Chart(ctx, {
                 type: 'doughnut',
@@ -365,6 +414,135 @@
             });
         }
 
+        // Time Period Bar Charts (Days, Weeks, Months)
+        function updateTimeBarCharts(sessions) {
+            updateDayBarChart(sessions);
+            updateWeekBarChart(sessions);
+            updateMonthBarChart(sessions);
+        }
+
+        // Bar chart: Last 7 days
+        function updateDayBarChart(sessions) {
+            const data = {};
+            const today = new Date();
+
+            for (let i = 6; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - i);
+                const dateStr = date.toLocaleDateString('en-US', { weekday: 'short' });
+                data[dateStr] = 0;
+            }
+
+            sessions.forEach(s => {
+                const sessionDate = new Date(s.completedAt);
+                sessionDate.setHours(0, 0, 0, 0);
+                const today2 = new Date();
+                today2.setHours(0, 0, 0, 0);
+                
+                const diffTime = Math.abs(today2 - sessionDate);
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                
+                if (diffDays <= 6) {
+                    const dateStr = sessionDate.toLocaleDateString('en-US', { weekday: 'short' });
+                    data[dateStr] += s.durationMinutes;
+                }
+            });
+
+            updateBarChart('dayBarChart', data, 'Last 7 Days');
+        }
+
+        // Bar chart: Last 12 weeks
+        function updateWeekBarChart(sessions) {
+            const data = {};
+            const today = new Date();
+
+            for (let i = 11; i >= 0; i--) {
+                const date = new Date(today);
+                date.setDate(date.getDate() - (date.getDay() + 7 * i));
+                const weekStart = new Date(date);
+                weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+                const weekLabel = 'W' + Math.ceil((weekStart.getDate()) / 7);
+                data[weekLabel] = 0;
+            }
+
+            sessions.forEach(s => {
+                const sessionDate = new Date(s.completedAt);
+                const weekStart = new Date(sessionDate);
+                weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+                const weekLabel = 'W' + Math.ceil((weekStart.getDate()) / 7);
+                if (data.hasOwnProperty(weekLabel)) {
+                    data[weekLabel] += s.durationMinutes;
+                }
+            });
+
+            updateBarChart('weekBarChart', data, 'Last 12 Weeks');
+        }
+
+        // Bar chart: Last 12 months
+        function updateMonthBarChart(sessions) {
+            const data = {};
+            const today = new Date();
+
+            for (let i = 11; i >= 0; i--) {
+                const date = new Date(today.getFullYear(), today.getMonth() - i, 1);
+                const monthStr = date.toLocaleDateString('en-US', { month: 'short' });
+                data[monthStr] = 0;
+            }
+
+            sessions.forEach(s => {
+                const sessionDate = new Date(s.completedAt);
+                const monthStr = sessionDate.toLocaleDateString('en-US', { month: 'short' });
+                if (data.hasOwnProperty(monthStr)) {
+                    data[monthStr] += s.durationMinutes;
+                }
+            });
+
+            updateBarChart('monthBarChart', data, 'Last 12 Months');
+        }
+
+        // Update bar chart
+        function updateBarChart(canvasId, data, title) {
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return;
+
+            if (chartInstances[canvasId]) {
+                chartInstances[canvasId].destroy();
+            }
+
+            chartInstances[canvasId] = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(data),
+                    datasets: [{
+                        label: 'Minutes',
+                        data: Object.values(data),
+                        backgroundColor: '#a99878',
+                        borderColor: '#8b7355',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#8b7355' }
+                        },
+                        x: {
+                            ticks: { color: '#8b7355' }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: { color: '#8b7355' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Real-time listener
         function setupRealtimeListener() {
             if (!state.firebaseReady) return;
             
@@ -378,6 +556,7 @@
             );
 
             onSnapshot(q, (snapshot) => {
+                console.log('Real-time update detected');
                 loadTodaySessions();
                 loadAllSessions();
             });
@@ -391,7 +570,7 @@
             setTimeout(() => notif.remove(), 3000);
         }
 
-        // Global function for delete button
+        // Global delete function
         window.deleteSessionFromUI = function(sessionId) {
             if (confirm('Delete this session?')) {
                 deleteSession(sessionId);
@@ -456,7 +635,7 @@
             backdrop-filter: blur(10px);
             border-radius: 24px;
             box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08), 0 0 60px rgba(169, 152, 120, 0.06);
-            max-width: 700px;
+            max-width: 750px;
             width: 100%;
             padding: 35px;
             border: 1px solid rgba(169, 152, 120, 0.12);
@@ -483,10 +662,6 @@
 
         .sync-status.connected {
             color: #4caf50;
-        }
-
-        .sync-status.disconnected {
-            color: #f44336;
         }
 
         .tabs {
@@ -641,13 +816,6 @@
             box-shadow: 0 8px 20px rgba(169, 152, 120, 0.3);
         }
 
-        .btn-primary:disabled {
-            background: #d0d0d0;
-            color: #999;
-            cursor: not-allowed;
-            box-shadow: none;
-        }
-
         .btn-secondary {
             background: rgba(169, 152, 120, 0.08);
             color: #8b7355;
@@ -680,6 +848,15 @@
             height: 280px;
         }
 
+        .chart-empty {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #b8b8b8;
+            font-size: 14px;
+        }
+
         .chart-title {
             font-size: 12px;
             font-weight: 600;
@@ -690,6 +867,12 @@
         }
 
         .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+        }
+
+        .chart-row {
             display: grid;
             grid-template-columns: 1fr;
             gap: 20px;
@@ -901,24 +1084,51 @@
 
         <div id="analytics" class="tab-content">
             <div class="charts-grid">
-                <div>
-                    <div class="chart-title">Today by Category</div>
-                    <div class="chart-container">
-                        <canvas id="dayChart"></canvas>
+                <!-- Category Pie Charts -->
+                <div class="chart-row">
+                    <div>
+                        <div class="chart-title">Today by Category</div>
+                        <div class="chart-container">
+                            <canvas id="dayPieChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="chart-title">This Week by Category</div>
+                        <div class="chart-container">
+                            <canvas id="weekPieChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="chart-title">This Month by Category</div>
+                        <div class="chart-container">
+                            <canvas id="monthPieChart"></canvas>
+                        </div>
                     </div>
                 </div>
 
-                <div>
-                    <div class="chart-title">This Week by Category</div>
-                    <div class="chart-container">
-                        <canvas id="weekChart"></canvas>
+                <!-- Time Period Bar Charts -->
+                <div class="chart-row">
+                    <div>
+                        <div class="chart-title">Last 7 Days</div>
+                        <div class="chart-container">
+                            <canvas id="dayBarChart"></canvas>
+                        </div>
                     </div>
-                </div>
 
-                <div>
-                    <div class="chart-title">This Month by Category</div>
-                    <div class="chart-container">
-                        <canvas id="monthChart"></canvas>
+                    <div>
+                        <div class="chart-title">Last 12 Weeks</div>
+                        <div class="chart-container">
+                            <canvas id="weekBarChart"></canvas>
+                        </div>
+                    </div>
+
+                    <div>
+                        <div class="chart-title">Last 12 Months</div>
+                        <div class="chart-container">
+                            <canvas id="monthBarChart"></canvas>
+                        </div>
                     </div>
                 </div>
             </div>
