@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pomodoro Focus Tracker</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='75'>🍅</text></svg>">
     
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
     
@@ -24,7 +23,6 @@
 
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
-        const auth = firebase.auth();
 
         const WORK_DURATION = 25;
         const BREAK_DURATION = 5;
@@ -42,7 +40,7 @@
 
         let chartInstances = {};
 
-        // Get or create a persistent user ID
+        // Get or create persistent user ID
         function getPersistentUserId() {
             let userId = localStorage.getItem('pomodoroUserId');
             if (!userId) {
@@ -55,19 +53,73 @@
             return userId;
         }
 
+        // Save timer state to localStorage
+        function saveTimerState() {
+            localStorage.setItem('pomodoroTimerState', JSON.stringify({
+                timeRemaining: state.timeRemaining,
+                isWorkSession: state.isWorkSession,
+                isRunning: state.isRunning,
+                sessionStartTime: state.sessionStartTime,
+                sessionPausedTime: state.sessionPausedTime,
+                savedAt: Date.now()
+            }));
+        }
+
+        // Restore timer state from localStorage
+        function restoreTimerState() {
+            const saved = localStorage.getItem('pomodoroTimerState');
+            if (saved) {
+                try {
+                    const data = JSON.parse(saved);
+                    const timeSinceRefresh = Date.now() - data.savedAt;
+                    
+                    // If timer was running, calculate new time remaining
+                    if (data.isRunning) {
+                        const elapsedSeconds = Math.floor(timeSinceRefresh / 1000);
+                        const sessionDuration = data.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+                        state.timeRemaining = Math.max(0, sessionDuration - (data.sessionPausedTime + elapsedSeconds));
+                        state.sessionPausedTime = data.sessionPausedTime + elapsedSeconds;
+                        state.isRunning = true;
+                        state.sessionStartTime = Date.now() - (state.sessionPausedTime * 1000);
+                        console.log('✅ Restored running timer. Time remaining:', state.timeRemaining);
+                    } else {
+                        state.timeRemaining = data.timeRemaining;
+                        state.sessionPausedTime = data.sessionPausedTime;
+                        console.log('✅ Restored paused timer. Time remaining:', state.timeRemaining);
+                    }
+                    
+                    state.isWorkSession = data.isWorkSession;
+                } catch (error) {
+                    console.error('Error restoring timer state:', error);
+                }
+            }
+        }
+
         // Initialize
         function initializeApp() {
-            console.log("🔵 Step 1: Getting persistent user ID...");
+            console.log("🔵 Initializing app...");
             state.userId = getPersistentUserId();
             state.firebaseReady = true;
             
-            console.log("🔵 Step 2: Loading sessions...");
             document.getElementById('syncStatus').textContent = '✓ Synced';
             document.getElementById('syncStatus').className = 'sync-status connected';
             
+            // Restore timer state
+            restoreTimerState();
+            updateTimerDisplay();
+            
+            // Load sessions
             loadTodaySessions();
             loadAllSessions();
             setupRealtimeListener();
+            
+            // If timer was running, restart it
+            if (state.isRunning) {
+                startTimer();
+            }
+            
+            // Save timer state every second
+            setInterval(saveTimerState, 1000);
         }
 
         // Timer Functions
@@ -76,6 +128,9 @@
             const seconds = state.timeRemaining % 60;
             document.getElementById('timerDisplay').textContent = 
                 `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+            
+            const label = state.isWorkSession ? 'Work Session' : 'Break Time';
+            document.getElementById('sessionType').textContent = label;
         }
 
         function startTimer() {
@@ -87,6 +142,8 @@
             document.getElementById('pauseBtn').style.display = 'block';
             document.getElementById('endBtn').style.display = 'block';
             document.body.classList.add('focusing');
+            
+            saveTimerState();
 
             state.timerInterval = setInterval(() => {
                 const elapsedSeconds = Math.floor((Date.now() - state.sessionStartTime) / 1000);
@@ -110,6 +167,8 @@
             document.getElementById('pauseBtn').style.display = 'none';
             document.getElementById('endBtn').style.display = 'none';
             document.body.classList.remove('focusing');
+            
+            saveTimerState();
         }
 
         function resetTimer() {
@@ -119,7 +178,8 @@
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
             updateTimerDisplay();
-            document.getElementById('sessionType').textContent = 'Work Session';
+            
+            localStorage.removeItem('pomodoroTimerState');
         }
 
         async function completeSessionAuto() {
@@ -136,11 +196,10 @@
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
-            document.getElementById('sessionType').textContent = 
-                state.isWorkSession ? 'Work Session' : 'Break Time';
-            
             updateTimerDisplay();
             document.getElementById('sessionLabel').value = '';
+            
+            localStorage.removeItem('pomodoroTimerState');
         }
 
         async function endSessionManual() {
@@ -161,11 +220,10 @@
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
-            document.getElementById('sessionType').textContent = 
-                state.isWorkSession ? 'Work Session' : 'Break Time';
-            
             updateTimerDisplay();
             document.getElementById('sessionLabel').value = '';
+            
+            localStorage.removeItem('pomodoroTimerState');
         }
 
         // Save session
@@ -566,7 +624,6 @@
             });
 
             initializeApp();
-            updateTimerDisplay();
         });
     </script>
 
