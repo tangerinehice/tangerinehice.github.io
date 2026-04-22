@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pomodoro Focus Tracker</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='75'>🍅</text></svg>">
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #f8f6f1 0%, #ede8e0 50%, #f5f0e8 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            color: #3d3d3d;
+            transition: background 0.8s ease;
+        }
+
+        body.focusing {
+            background: linear-gradient(135deg, #faf8f3 0%, #f0ebe3 50%, #ebe5db 100%);
+            animation: focusPulse 0.6s ease-out;
+        }
+
+        @keyframes focusPulse {
+            0% { filter: brightness(0.98); }
+            50% { filter: brightness(1.02); }
+            100% { filter: brightness(1); }
+        }
+
+        .container {
+            background: linear-gradient(135deg, #ffffff 0%, #fdfbf7 100%);
+            backdrop-filter: blur(10px);
+            border-radius: 24px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08), 0 0 60px rgba(169, 152, 120, 0.06);
+            max-width: 600px;
+            width: 100%;
+            padding: 35px;
+            border: 1px solid rgba(169, 152, 120, 0.12);
+        }
+
+        h1 {
+            text-align: center;
+            color: #8b7355;
+            margin-bottom: 8px;
+            font-size: 32px;
+            letter-spacing: 3px;
+            text-shadow: 0 2px 8px rgba(169, 152, 120, 0.08);
+            font-weight: 300;
+        }
+
+        .sync-status {
+            text-align: center;
+            font-size: 12px;
+            color: #a0a0a0;
+            margin-bottom: 28px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        .sync-status.connected {
+            color: #4caf50;
+        }
+
+        .sync-status.disconnected {
+            color: #f44336;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 32px;
+            border-bottom: 2px solid rgba(169, 152, 120, 0.12);
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            flex: 1;
+            padding: 14px 20px;
+            background: transparent;
+            border: none;
+            color: #a0a0a0;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 1.2px;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s;
+            position: relative;
+            bottom: -2px;
+            min-width: 100px;
+        }
+
+        .tab-btn:hover {
+            color: #8b7355;
+        }
+
+        .tab-btn.active {
+            color: #8b7355;
+            border-bottom-color: #a99878;
+            text-shadow: 0 0 10px rgba(169, 152, 120, 0.15);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .timer-section {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 40px;
+            background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
+            border-radius: 16px;
+            border: 1px solid rgba(169, 152, 120, 0.15);
+        }
+
+        .timer-display {
+            font-size: 72px;
+            font-weight: 300;
+            color: #a99878;
+            font-variant-numeric: tabular-nums;
+            margin: 30px 0;
+            font-family: 'Courier New', monospace;
+            text-shadow: 0 2px 8px rgba(169, 152, 120, 0.12);
+            letter-spacing: 4px;
+        }
+
+        .timer-label {
+            font-size: 13px;
+            color: #8b7355;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            opacity: 0.85;
+            font-weight: 300;
+        }
+
+        .input-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        input[type="text"],
+        select {
+            padding: 12px 16px;
+            border: 1.5px solid rgba(169, 152, 120, 0.2);
+            border-radius: 10px;
+            font-size: 14px;
+            background: rgba(255, 255, 255, 0.7);
+            color: #3d3d3d;
+            transition: all 0.3s;
+            font-weight: 300;
+        }
+
+        input[type="text"]::placeholder {
+            color: #b8b8b8;
+        }
+
+        input[type="text"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #a99878;
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 15px rgba(169, 152, 120, 0.15);
+        }
+
+        select {
+            cursor: pointer;
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 13px 20px;
+            border: none;
+            border-radius: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #a99878 0%, #9a8968 100%);
+            color: #ffffff;
+            box-shadow: 0 5px 15px rgba(169, 152, 120, 0.2);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(169, 152, 120, 0.3);
+        }
+
+        .btn-primary:disabled {
+            background: #d0d0d0;
+            color: #999;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .btn-secondary {
+            background: rgba(169, 152, 120, 0.08);
+            color: #8b7355;
+            border: 1.5px solid rgba(169, 152, 120, 0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(169, 152, 120, 0.12);
+            border-color: #a99878;
+        }
+
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #da190b;
+        }
+
+        .stats-section {
+            background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
+            padding: 28px;
+            border-radius: 16px;
+            margin-bottom: 28px;
+            border: 1px solid rgba(169, 152, 120, 0.15);
+        }
+
+        .stats-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b7355;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            letter-spacing: 1.2px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 14px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.6);
+            padding: 18px;
+            border-radius: 12px;
+            text-align: center;
+            border: 1px solid rgba(169, 152, 120, 0.12);
+            transition: all 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: rgba(169, 152, 120, 0.25);
+            background: rgba(255, 255, 255, 0.85);
+            box-shadow: 0 4px 12px rgba(169, 152, 120, 0.08);
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 600;
+            color: #a99878;
+            margin-bottom: 6px;
+            text-shadow: 0 1px 4px rgba(169, 152, 120, 0.1);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 300;
+        }
+
+        .history-section {
+            margin-top: 20px;
+        }
+
+        .history-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b7355;
+            text-transform: uppercase;
+            margin-bottom: 16px;
+            letter-spacing: 1.2px;
+        }
+
+        .history-list {
+            max-height: 400px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .history-item {
+            background: rgba(169, 152, 120, 0.04);
+            padding: 13px;
+            border-radius: 10px;
+            border-left: 3px solid #a99878;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            transition: all 0.3s;
+            border: 1px solid rgba(169, 152, 120, 0.12);
+        }
+
+        .history-item:hover {
+            background: rgba(169, 152, 120, 0.08);
+            border-color: rgba(169, 152, 120, 0.25);
+            box-shadow: 0 2px 8px rgba(169, 152, 120, 0.06);
+        }
+
+        .history-item-info {
+            flex: 1;
+        }
+
+        .history-item-label {
+            font-weight: 600;
+            color: #8b7355;
+            margin-bottom: 3px;
+        }
+
+        .history-item-time {
+            color: #999;
+            font-size: 11px;
+        }
+
+        .history-item-duration {
+            font-weight: 600;
+            color: #a99878;
+            margin-left: 10px;
+        }
+
+        .history-empty {
+            text-align: center;
+            color: #b8b8b8;
+            padding: 20px;
+            font-size: 14px;
+        }
+
+        .analytics-section {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 28px;
+        }
+
+        .analytics-controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .time-period-btn {
+            padding: 10px 20px;
+            background: rgba(169, 152, 120, 0.08);
+            border: 1.5px solid rgba(169, 152, 120, 0.2);
+            color: #8b7355;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            transition: all 0.3s;
+            letter-spacing: 0.5px;
+        }
+
+        .time-period-btn:hover {
+            border-color: #a99878;
+            background: rgba(169, 152, 120, 0.12);
+        }
+
+        .time-period-btn.active {
+            background: #a99878;
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(169, 152, 120, 0.2);
+        }
+
+        .chart-wrapper {
+            background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
+            padding: 28px;
+            border-radius: 16px;
+            border: 1px solid rgba(169, 152, 120, 0.15);
+        }
+
+        .chart-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b7355;
+            text-transform: uppercase;
+            margin-bottom: 20px;
+            letter-spacing: 1.2px;
+        }
+
+        .chart-canvas {
+            position: relative;
+            height: 320px;
+        }
+
+        .history-list::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .history-list::-webkit-scrollbar-track {
+            background: rgba(169, 152, 120, 0.05);
+            border-radius: 10px;
+        }
+
+        .history-list::-webkit-scrollbar-thumb {
+            background: rgba(169, 152, 120, 0.25);
+            border-radius: 10px;
+        }
+
+        .history-list::-webkit-scrollbar-thumb:hover {
+            background: rgba(169, 152, 120, 0.4);
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: linear-gradient(135deg, #a99878 0%, #9a8968 100%);
+            color: #ffffff;
+            padding: 15px 20px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(169, 152, 120, 0.25);
+            animation: slideIn 0.3s ease-out;
+            z-index: 1000;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                padding: 25px;
+            }
+            .timer-display {
+                font-size: 56px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 18px;
+            }
+            .timer-display {
+                font-size: 48px;
+            }
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .notification {
+                right: 10px;
+                left: 10px;
+                top: auto;
+                bottom: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🍅 Focus Tracker</h1>
+        <div class="sync-status" id="syncStatus">Connecting...</div>
+
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="timer">Timer</button>
+            <button class="tab-btn" data-tab="today">Today</button>
+            <button class="tab-btn" data-tab="analytics">Analytics</button>
+        </div>
+
+        <div id="timer" class="tab-content active">
+            <div class="timer-section">
+                <div class="timer-label" id="sessionType">Work Session</div>
+                <div class="timer-display" id="timerDisplay">25:00</div>
+                <div class="input-section">
+                    <input 
+                        type="text" 
+                        id="sessionLabel" 
+                        placeholder="What are you focusing on?"
+                        maxlength="50"
+                    >
+                    <select id="sessionCategory">
+                        <option value="work">Work</option>
+                        <option value="pm">PM</option>
+                        <option value="tech">Tech</option>
+                        <option value="reader">Reader</option>
+                    </select>
+                </div>
+                <div class="button-group">
+                    <button class="btn-primary" id="startBtn">Start Session</button>
+                    <button class="btn-secondary" id="pauseBtn" style="display: none;">Pause</button>
+                    <button class="btn-secondary" id="resetBtn">Reset</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="today" class="tab-content">
+            <div class="stats-section">
+                <div class="stats-title">Today's Stats</div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalSessions">0</div>
+                        <div class="stat-label">Sessions</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="totalMinutes">0</div>
+                        <div class="stat-label">Minutes</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="topCategory">—</div>
+                        <div class="stat-label">Top</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="history-section">
+                <div class="history-title">Recent Sessions</div>
+                <div class="history-list" id="historyList">
+                    <div class="history-empty">No sessions yet</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="analytics" class="tab-content">
+            <div class="analytics-controls">
+                <button class="time-period-btn active" data-period="daily">Daily</button>
+                <button class="time-period-btn" data-period="weekly">Weekly</button>
+                <button class="time-period-btn" data-period="monthly">Monthly</button>
+            </div>
+
+            <div class="chart-wrapper">
+                <div class="chart-title">Time by Category</div>
+                <div class="chart-canvas">
+                    <canvas id="categoryChart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-wrapper">
+                <div class="chart-title">Daily Comparison</div>
+                <div class="chart-canvas">
+                    <canvas id="comparisonChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Firebase Config
+        const firebaseConfig = {
+            apiKey: "AIzaSyApJ8MJ4NTDt5CDqDsVRUSv5_urt2TbtFI",
+            authDomain: "mypomo-e2622.firebaseapp.com",
+            projectId: "mypomo-e2622",
+            storageBucket: "mypomo-e2622.appspot.com",
+            messagingSenderId: "1082968451105",
+            appId: "1:1082968451105:web:5f4dd2bd38213d1bd21b60"
+        };
+
+        // Initialize Firebase
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+
+        // Configuration
+        const WORK_DURATION = 25;
+        const BREAK_DURATION = 5;
+        const LONG_BREAK_DURATION = 15;
+
+        let state = {
+            isRunning: false,
+            timeRemaining: WORK_DURATION * 60,
+            isWorkSession: true,
+            sessionCount: 0,
+            firebaseReady: false,
+            userId: null,
+            currentTimePeriod: 'daily',
+            timerInterval: null
+        };
+
+        // Initialize Firebase Auth
+        async function initializeFirebase() {
+            try {
+                await auth.signInAnonymously();
+                state.userId = auth.currentUser.uid;
+                state.firebaseReady = true;
+                document.getElementById('syncStatus').textContent = '✓ Synced';
+                document.getElementById('syncStatus').className = 'sync-status connected';
+                await loadTodaySessions();
+                setupRealtimeListener();
+            } catch (error) {
+                console.error('Firebase error:', error);
+                document.getElementById('syncStatus').textContent = '✗ Offline';
+            }
+        }
+
+        // Timer Functions
+        function updateTimerDisplay() {
+            const minutes = Math.floor(state.timeRemaining / 60);
+            const seconds = state.timeRemaining % 60;
+            document.getElementById('timerDisplay').textContent = 
+                `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+        }
+
+        function startTimer() {
+            if (state.isRunning) return;
+            
+            state.isRunning = true;
+            document.getElementById('startBtn').style.display = 'none';
+            document.getElementById('pauseBtn').style.display = 'block';
+            document.body.classList.add('focusing');
+
+            state.timerInterval = setInterval(() => {
+                state.timeRemaining--;
+                updateTimerDisplay();
+
+                if (state.timeRemaining <= 0) {
+                    completeSession();
+                }
+            }, 1000);
+        }
+
+        function pauseTimer() {
+            state.isRunning = false;
+            clearInterval(state.timerInterval);
+            document.getElementById('startBtn').style.display = 'block';
+            document.getElementById('pauseBtn').style.display = 'none';
+            document.body.classList.remove('focusing');
+        }
+
+        function resetTimer() {
+            pauseTimer();
+            state.isWorkSession = true;
+            state.timeRemaining = WORK_DURATION * 60;
+            updateTimerDisplay();
+            document.getElementById('sessionType').textContent = 'Work Session';
+        }
+
+        async function completeSession() {
+            pauseTimer();
+            
+            const label = document.getElementById('sessionLabel').value || 'Untitled';
+            const category = document.getElementById('sessionCategory').value;
+            const duration = state.isWorkSession ? WORK_DURATION : BREAK_DURATION;
+
+            await saveSession(label, category, duration);
+
+            showNotification(`✓ ${duration} min session completed!`);
+
+            // Switch to break
+            state.isWorkSession = !state.isWorkSession;
+            state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+            document.getElementById('sessionType').textContent = 
+                state.isWorkSession ? 'Work Session' : 'Break Time';
+            
+            updateTimerDisplay();
+            document.getElementById('sessionLabel').value = '';
+        }
+
+        async function saveSession(label, category, duration) {
+            if (!state.firebaseReady) return;
+            try {
+                await db.collection('sessions').add({
+                    userId: state.userId,
+                    label: label,
+                    category: category,
+                    durationMinutes: duration,
+                    completedAt: new Date()
+                });
+                await loadTodaySessions();
+                await updateAnalytics();
+            } catch (error) {
+                console.error('Error saving session:', error);
+            }
+        }
+
+        async function loadTodaySessions() {
+            if (!state.firebaseReady) return;
+            try {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0);
+                
+                const snapshot = await db.collection('sessions')
+                    .where('userId', '==', state.userId)
+                    .where('completedAt', '>=', today)
+                    .orderBy('completedAt', 'desc')
+                    .get();
+
+                const sessions = [];
+                snapshot.forEach(doc => {
+                    sessions.push({ id: doc.id, ...doc.data() });
+                });
+
+                displaySessions(sessions);
+                updateStats(sessions);
+                return sessions;
+            } catch (error) {
+                console.error('Error loading sessions:', error);
+            }
+        }
+
+        function displaySessions(sessions) {
+            const container = document.getElementById('historyList');
+            
+            if (sessions.length === 0) {
+                container.innerHTML = '<div class="history-empty">No sessions yet</div>';
+                return;
+            }
+
+            container.innerHTML = sessions.map(session => {
+                const time = session.completedAt.toDate().toLocaleTimeString();
+                return `
+                    <div class="history-item">
+                        <div class="history-item-info">
+                            <div class="history-item-label">${session.label}</div>
+                            <div class="history-item-time">${time}</div>
+                        </div>
+                        <div class="history-item-duration">${session.durationMinutes}m</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateStats(sessions) {
+            const totalSessions = sessions.length;
+            const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
+            
+            const categoryCount = {};
+            sessions.forEach(s => {
+                categoryCount[s.category] = (categoryCount[s.category] || 0) + 1;
+            });
+            
+            const topCategory = Object.keys(categoryCount).length > 0
+                ? Object.keys(categoryCount).reduce((a, b) => 
+                    categoryCount[a] > categoryCount[b] ? a : b)
+                : '—';
+
+            document.getElementById('totalSessions').textContent = totalSessions;
+            document.getElementById('totalMinutes').textContent = totalMinutes;
+            document.getElementById('topCategory').textContent = topCategory.toUpperCase();
+        }
+
+        function setupRealtimeListener() {
+            if (!state.firebaseReady) return;
+            
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
+            db.collection('sessions')
+                .where('userId', '==', state.userId)
+                .where('completedAt', '>=', today)
+                .onSnapshot(snapshot => {
+                    loadTodaySessions();
+                });
+        }
+
+        async function updateAnalytics() {
+            // Placeholder for analytics updates
+        }
+
+        function showNotification(message) {
+            const notif = document.createElement('div');
+            notif.className = 'notification';
+            notif.textContent = message;
+            document.body.appendChild(notif);
+            setTimeout(() => notif.remove(), 3000);
+        }
+
+        // Event Listeners
+        document.getElementById('startBtn').addEventListener('click', startTimer);
+        document.getElementById('pauseBtn').addEventListener('click', pauseTimer);
+        document.getElementById('resetBtn').addEventListener('click', resetTimer);
+
+        // Tab Navigation
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                e.target.classList.add('active');
+                const tabId = e.target.dataset.tab;
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+
+        // Initialize
+        initializeFirebase();
+        updateTimerDisplay();
+    </script>
+</body>
+</html>
