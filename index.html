@@ -13,7 +13,6 @@
     <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
 
     <script>
-        // Firebase Config
         const firebaseConfig = {
             apiKey: "AIzaSyApJ8MJ4NTDt5CDqDsVRUSv5_urt2TbtFI",
             authDomain: "mypomo-e2622.firebaseapp.com",
@@ -23,12 +22,10 @@
             appId: "1:1082968451105:web:5f4dd2bd38213d1bd21b60"
         };
 
-        // Initialize Firebase
         firebase.initializeApp(firebaseConfig);
         const db = firebase.firestore();
         const auth = firebase.auth();
 
-        // Configuration
         const WORK_DURATION = 25;
         const BREAK_DURATION = 5;
 
@@ -45,25 +42,32 @@
 
         let chartInstances = {};
 
+        // Get or create a persistent user ID
+        function getPersistentUserId() {
+            let userId = localStorage.getItem('pomodoroUserId');
+            if (!userId) {
+                userId = 'shared_user_' + Date.now();
+                localStorage.setItem('pomodoroUserId', userId);
+                console.log('✅ Created new shared user ID:', userId);
+            } else {
+                console.log('✅ Using existing shared user ID:', userId);
+            }
+            return userId;
+        }
+
         // Initialize
         function initializeApp() {
-            console.log("🔵 Initializing app...");
+            console.log("🔵 Step 1: Getting persistent user ID...");
+            state.userId = getPersistentUserId();
+            state.firebaseReady = true;
             
-            auth.signInAnonymously().then(result => {
-                state.userId = result.user.uid;
-                state.firebaseReady = true;
-                console.log("✅ Firebase ready. User ID:", state.userId);
-                
-                document.getElementById('syncStatus').textContent = '✓ Synced';
-                document.getElementById('syncStatus').className = 'sync-status connected';
-                
-                loadTodaySessions();
-                loadAllSessions();
-                setupRealtimeListener();
-            }).catch(error => {
-                console.error("❌ Auth error:", error);
-                document.getElementById('syncStatus').textContent = '✗ Offline';
-            });
+            console.log("🔵 Step 2: Loading sessions...");
+            document.getElementById('syncStatus').textContent = '✓ Synced';
+            document.getElementById('syncStatus').className = 'sync-status connected';
+            
+            loadTodaySessions();
+            loadAllSessions();
+            setupRealtimeListener();
         }
 
         // Timer Functions
@@ -167,11 +171,11 @@
         // Save session
         async function saveSession(label, category, duration) {
             if (!state.firebaseReady) {
-                console.error('Firebase not ready');
+                console.error('❌ Firebase not ready');
                 return;
             }
             try {
-                console.log("💾 Saving session:", label, category, duration);
+                console.log("💾 Saving session with userId:", state.userId);
                 const docRef = await db.collection('sessions').add({
                     userId: state.userId,
                     label: label,
@@ -181,7 +185,6 @@
                 });
                 console.log("✅ Session saved:", docRef.id);
                 
-                // Reload immediately
                 setTimeout(() => {
                     loadTodaySessions();
                     loadAllSessions();
@@ -217,6 +220,7 @@
                 const today = new Date();
                 today.setHours(0, 0, 0, 0);
                 
+                console.log("📋 Loading today's sessions for userId:", state.userId);
                 const snapshot = await db.collection('sessions')
                     .where('userId', '==', state.userId)
                     .where('completedAt', '>=', today)
@@ -231,7 +235,7 @@
                     });
                 });
 
-                console.log("📋 Today sessions loaded:", sessions.length);
+                console.log("✅ Today sessions loaded:", sessions.length);
                 displaySessions(sessions);
             } catch (error) {
                 console.error('❌ Error loading today sessions:', error);
@@ -245,6 +249,7 @@
                 const last90Days = new Date();
                 last90Days.setDate(last90Days.getDate() - 90);
                 
+                console.log("📊 Loading all sessions for userId:", state.userId);
                 const snapshot = await db.collection('sessions')
                     .where('userId', '==', state.userId)
                     .where('completedAt', '>=', last90Days)
@@ -259,7 +264,7 @@
                     });
                 });
 
-                console.log("📊 All sessions loaded:", sessions.length);
+                console.log("✅ All sessions loaded:", sessions.length);
                 updateAllCharts(sessions);
             } catch (error) {
                 console.error('❌ Error loading all sessions:', error);
@@ -516,11 +521,12 @@
             const today = new Date();
             today.setHours(0, 0, 0, 0);
 
+            console.log("🔄 Setting up real-time listener for userId:", state.userId);
             db.collection('sessions')
                 .where('userId', '==', state.userId)
                 .where('completedAt', '>=', today)
                 .onSnapshot(snapshot => {
-                    console.log("🔄 Real-time update detected");
+                    console.log("🔄 Real-time update detected!");
                     loadTodaySessions();
                     loadAllSessions();
                 });
