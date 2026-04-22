@@ -14,7 +14,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getFirestore } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
         import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { collection, addDoc, query, where, orderBy, getDocs, onSnapshot, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         // Firebase Config
         const firebaseConfig = {
@@ -43,15 +43,15 @@
             userId: null,
             timerInterval: null,
             sessionStartTime: null,
-            sessionPausedTime: 0
+            sessionPausedTime: 0,
+            sessionStartedAt: null
         };
 
-        let chartInstance = null;
+        let chartInstances = {};
 
         // Initialize Firebase Auth with Shared User ID
         async function initializeFirebase() {
             try {
-                // Get or create a shared user ID (stored locally)
                 let sharedUserId = localStorage.getItem('pomodoroUserId');
                 if (!sharedUserId) {
                     sharedUserId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -82,9 +82,11 @@
             if (state.isRunning) return;
             
             state.isRunning = true;
+            state.sessionStartedAt = new Date();
             state.sessionStartTime = Date.now() - (state.sessionPausedTime * 1000);
             document.getElementById('startBtn').style.display = 'none';
             document.getElementById('pauseBtn').style.display = 'block';
+            document.getElementById('endBtn').style.display = 'block';
             document.body.classList.add('focusing');
 
             state.timerInterval = setInterval(() => {
@@ -95,9 +97,9 @@
                 updateTimerDisplay();
 
                 if (state.timeRemaining <= 0) {
-                    completeSession();
+                    completeSessionAuto();
                 }
-            }, 100); // Update more frequently for accuracy
+            }, 100);
         }
 
         function pauseTimer() {
@@ -107,6 +109,7 @@
             state.sessionPausedTime = elapsedSeconds;
             document.getElementById('startBtn').style.display = 'block';
             document.getElementById('pauseBtn').style.display = 'none';
+            document.getElementById('endBtn').style.display = 'none';
             document.body.classList.remove('focusing');
         }
 
@@ -116,11 +119,13 @@
             state.timeRemaining = WORK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
+            state.sessionStartedAt = null;
             updateTimerDisplay();
             document.getElementById('sessionType').textContent = 'Work Session';
         }
 
-        async function completeSession() {
+        // Auto-complete when timer reaches 0
+        async function completeSessionAuto() {
             pauseTimer();
             
             const label = document.getElementById('sessionLabel').value || 'Untitled';
@@ -131,11 +136,38 @@
 
             showNotification(`✓ ${duration} min session completed!`);
 
-            // Switch to break
             state.isWorkSession = !state.isWorkSession;
             state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
             state.sessionStartTime = null;
             state.sessionPausedTime = 0;
+            state.sessionStartedAt = null;
+            document.getElementById('sessionType').textContent = 
+                state.isWorkSession ? 'Work Session' : 'Break Time';
+            
+            updateTimerDisplay();
+            document.getElementById('sessionLabel').value = '';
+        }
+
+        // Manual end session - records actual elapsed time
+        async function endSessionManual() {
+            if (!state.isRunning && !state.sessionPausedTime) return;
+
+            pauseTimer();
+
+            const label = document.getElementById('sessionLabel').value || 'Untitled';
+            const category = document.getElementById('sessionCategory').value;
+            const elapsedMinutes = Math.round(state.sessionPausedTime / 60);
+
+            if (elapsedMinutes > 0) {
+                await saveSession(label, category, elapsedMinutes);
+                showNotification(`✓ Session ended: ${elapsedMinutes} min recorded!`);
+            }
+
+            state.isWorkSession = !state.isWorkSession;
+            state.timeRemaining = state.isWorkSession ? WORK_DURATION * 60 : BREAK_DURATION * 60;
+            state.sessionStartTime = null;
+            state.sessionPausedTime = 0;
+            state.sessionStartedAt = null;
             document.getElementById('sessionType').textContent = 
                 state.isWorkSession ? 'Work Session' : 'Break Time';
             
@@ -160,6 +192,18 @@
             }
         }
 
+        async function deleteSession(sessionId) {
+            if (!state.firebaseReady) return;
+            try {
+                await deleteDoc(doc(db, 'sessions', sessionId));
+                await loadTodaySessions();
+                await loadAllSessions();
+                showNotification('✓ Session deleted');
+            } catch (error) {
+                console.error('Error deleting session:', error);
+            }
+        }
+
         async function loadTodaySessions() {
             if (!state.firebaseReady) return;
             try {
@@ -180,7 +224,6 @@
                 });
 
                 displaySessions(sessions);
-                updateStats(sessions);
                 return sessions;
             } catch (error) {
                 console.error('Error loading sessions:', error);
@@ -229,196 +272,97 @@
                             <div class="history-item-label">${session.label}</div>
                             <div class="history-item-time">${time}</div>
                         </div>
-                        <div class="history-item-duration">${session.durationMinutes}m</div>
+                        <div class="history-item-right">
+                            <div class="history-item-duration">${session.durationMinutes}m</div>
+                            <button class="history-item-delete" onclick="window.deleteSessionFromUI('${session.id}')">✕</button>
+                        </div>
                     </div>
                 `;
             }).join('');
         }
 
-        function updateStats(sessions) {
-            const totalSessions = sessions.length;
-            const totalMinutes = sessions.reduce((sum, s) => sum + s.durationMinutes, 0);
-            
-            const categoryCount = {};
-            sessions.forEach(s => {
-                categoryCount[s.category] = (categoryCount[s.category] || 0) + 1;
-            });
-            
-            const topCategory = Object.keys(categoryCount).length > 0
-                ? Object.keys(categoryCount).reduce((a, b) => 
-                    categoryCount[a] > categoryCount[b] ? a : b)
-                : '—';
+        function updateCharts(sessions) {
+            // Day Pie Chart
+            const dayData = getCategoryDataForPeriod(sessions, 'day');
+            updatePieChart('dayChart', dayData, 'Today by Category');
 
-            document.getElementById('totalSessions').textContent = totalSessions;
-            document.getElementById('totalMinutes').textContent = totalMinutes;
-            document.getElementById('topCategory').textContent = topCategory.toUpperCase();
+            // Week Pie Chart
+            const weekData = getCategoryDataForPeriod(sessions, 'week');
+            updatePieChart('weekChart', weekData, 'This Week by Category');
+
+            // Month Pie Chart
+            const monthData = getCategoryDataForPeriod(sessions, 'month');
+            updatePieChart('monthChart', monthData, 'This Month by Category');
         }
 
-        function updateCharts(sessions) {
-            // Category Pie Chart
+        function getCategoryDataForPeriod(sessions, period) {
+            const now = new Date();
+            let startDate = new Date();
+
+            if (period === 'day') {
+                startDate.setHours(0, 0, 0, 0);
+            } else if (period === 'week') {
+                startDate.setDate(now.getDate() - now.getDay());
+                startDate.setHours(0, 0, 0, 0);
+            } else if (period === 'month') {
+                startDate.setDate(1);
+                startDate.setHours(0, 0, 0, 0);
+            }
+
+            const filtered = sessions.filter(s => s.completedAt.toDate() >= startDate);
             const categoryCount = {};
-            sessions.forEach(s => {
+            filtered.forEach(s => {
                 categoryCount[s.category] = (categoryCount[s.category] || 0) + s.durationMinutes;
             });
 
-            const categoryCtx = document.getElementById('categoryChart');
-            if (categoryCtx) {
-                if (chartInstance) {
-                    chartInstance.destroy();
-                }
-                chartInstance = new Chart(categoryCtx, {
-                    type: 'doughnut',
-                    data: {
-                        labels: Object.keys(categoryCount),
-                        datasets: [{
-                            data: Object.values(categoryCount),
-                            backgroundColor: [
-                                '#a99878',
-                                '#8b7355',
-                                '#c4b5a0',
-                                '#9a8968',
-                                '#b8a890'
-                            ],
-                            borderColor: '#ffffff',
-                            borderWidth: 2
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        plugins: {
-                            legend: {
-                                position: 'bottom',
-                                labels: {
-                                    color: '#8b7355',
-                                    font: { size: 12 },
-                                    padding: 15
+            return categoryCount;
+        }
+
+        function updatePieChart(canvasId, data, title) {
+            const ctx = document.getElementById(canvasId);
+            if (!ctx) return;
+
+            if (chartInstances[canvasId]) {
+                chartInstances[canvasId].destroy();
+            }
+
+            const colors = ['#a99878', '#8b7355', '#c4b5a0', '#9a8968', '#b8a890'];
+            const labels = Object.keys(data);
+            const values = Object.values(data);
+
+            chartInstances[canvasId] = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels.map(l => l.toUpperCase()),
+                    datasets: [{
+                        data: values,
+                        backgroundColor: colors.slice(0, labels.length),
+                        borderColor: '#ffffff',
+                        borderWidth: 2
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom',
+                            labels: {
+                                color: '#8b7355',
+                                font: { size: 11 },
+                                padding: 12
+                            }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.label + ': ' + context.parsed + ' min';
                                 }
                             }
                         }
                     }
-                });
-            }
-
-            // Weekly Comparison
-            const weeklyData = getWeeklyData(sessions);
-            updateWeeklyChart(weeklyData);
-
-            // Monthly Comparison
-            const monthlyData = getMonthlyData(sessions);
-            updateMonthlyChart(monthlyData);
-        }
-
-        function getWeeklyData(sessions) {
-            const data = {};
-            const today = new Date();
-            
-            for (let i = 6; i >= 0; i--) {
-                const date = new Date(today);
-                date.setDate(date.getDate() - i);
-                const dateStr = date.toLocaleDateString('en-US', { weekday: 'short' });
-                data[dateStr] = 0;
-            }
-
-            sessions.forEach(s => {
-                const sessionDate = s.completedAt.toDate();
-                const dateStr = sessionDate.toLocaleDateString('en-US', { weekday: 'short' });
-                if (data.hasOwnProperty(dateStr)) {
-                    data[dateStr] += s.durationMinutes;
                 }
             });
-
-            return data;
-        }
-
-        function updateWeeklyChart(data) {
-            const ctx = document.getElementById('weeklyChart');
-            if (ctx && window.weeklyChart) {
-                window.weeklyChart.destroy();
-            }
-            if (ctx) {
-                window.weeklyChart = new Chart(ctx, {
-                    type: 'bar',
-                    data: {
-                        labels: Object.keys(data),
-                        datasets: [{
-                            label: 'Minutes',
-                            data: Object.values(data),
-                            backgroundColor: '#a99878',
-                            borderColor: '#8b7355',
-                            borderWidth: 1
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        scales: {
-                            y: { beginAtZero: true, ticks: { color: '#8b7355' } },
-                            x: { ticks: { color: '#8b7355' } }
-                        },
-                        plugins: {
-                            legend: { labels: { color: '#8b7355' } }
-                        }
-                    }
-                });
-            }
-        }
-
-        function getMonthlyData(sessions) {
-            const data = {};
-            const today = new Date();
-            
-            for (let i = 29; i >= 0; i--) {
-                const date = new Date(today);
-                date.setDate(date.getDate() - i);
-                const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                data[dateStr] = 0;
-            }
-
-            sessions.forEach(s => {
-                const sessionDate = s.completedAt.toDate();
-                const dateStr = sessionDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                if (data.hasOwnProperty(dateStr)) {
-                    data[dateStr] += s.durationMinutes;
-                }
-            });
-
-            return data;
-        }
-
-        function updateMonthlyChart(data) {
-            const ctx = document.getElementById('monthlyChart');
-            if (ctx && window.monthlyChart) {
-                window.monthlyChart.destroy();
-            }
-            if (ctx) {
-                window.monthlyChart = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: Object.keys(data),
-                        datasets: [{
-                            label: 'Minutes',
-                            data: Object.values(data),
-                            borderColor: '#a99878',
-                            backgroundColor: 'rgba(169, 152, 120, 0.1)',
-                            borderWidth: 2,
-                            fill: true,
-                            tension: 0.4
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: true,
-                        scales: {
-                            y: { beginAtZero: true, ticks: { color: '#8b7355' } },
-                            x: { ticks: { color: '#8b7355' } }
-                        },
-                        plugins: {
-                            legend: { labels: { color: '#8b7355' } }
-                        }
-                    }
-                });
-            }
         }
 
         function setupRealtimeListener() {
@@ -447,10 +391,18 @@
             setTimeout(() => notif.remove(), 3000);
         }
 
+        // Global function for delete button
+        window.deleteSessionFromUI = function(sessionId) {
+            if (confirm('Delete this session?')) {
+                deleteSession(sessionId);
+            }
+        };
+
         // Event Listeners
         document.getElementById('startBtn').addEventListener('click', startTimer);
         document.getElementById('pauseBtn').addEventListener('click', pauseTimer);
         document.getElementById('resetBtn').addEventListener('click', resetTimer);
+        document.getElementById('endBtn').addEventListener('click', endSessionManual);
 
         // Tab Navigation
         document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -660,7 +612,7 @@
 
         .button-group {
             display: grid;
-            grid-template-columns: 1fr;
+            grid-template-columns: 1fr 1fr;
             gap: 10px;
             margin-bottom: 20px;
         }
@@ -681,6 +633,7 @@
             background: linear-gradient(135deg, #a99878 0%, #9a8968 100%);
             color: #ffffff;
             box-shadow: 0 5px 15px rgba(169, 152, 120, 0.2);
+            grid-column: 1 / -1;
         }
 
         .btn-primary:hover:not(:disabled) {
@@ -706,59 +659,15 @@
             border-color: #a99878;
         }
 
-        .stats-section {
-            background: linear-gradient(135deg, rgba(169, 152, 120, 0.06) 0%, rgba(245, 240, 232, 0.8) 100%);
-            padding: 28px;
-            border-radius: 16px;
-            margin-bottom: 28px;
-            border: 1px solid rgba(169, 152, 120, 0.15);
+        .btn-danger {
+            background: rgba(244, 67, 54, 0.1);
+            color: #f44336;
+            border: 1.5px solid rgba(244, 67, 54, 0.2);
         }
 
-        .stats-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: #8b7355;
-            text-transform: uppercase;
-            margin-bottom: 20px;
-            letter-spacing: 1.2px;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr 1fr;
-            gap: 14px;
-            margin-bottom: 20px;
-        }
-
-        .stat-card {
-            background: rgba(255, 255, 255, 0.6);
-            padding: 18px;
-            border-radius: 12px;
-            text-align: center;
-            border: 1px solid rgba(169, 152, 120, 0.12);
-            transition: all 0.3s;
-        }
-
-        .stat-card:hover {
-            border-color: rgba(169, 152, 120, 0.25);
-            background: rgba(255, 255, 255, 0.85);
-            box-shadow: 0 4px 12px rgba(169, 152, 120, 0.08);
-        }
-
-        .stat-value {
-            font-size: 28px;
-            font-weight: 600;
-            color: #a99878;
-            margin-bottom: 6px;
-            text-shadow: 0 1px 4px rgba(169, 152, 120, 0.1);
-        }
-
-        .stat-label {
-            font-size: 11px;
-            color: #999;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-weight: 300;
+        .btn-danger:hover {
+            background: rgba(244, 67, 54, 0.15);
+            border-color: #f44336;
         }
 
         .chart-container {
@@ -768,7 +677,7 @@
             margin-bottom: 20px;
             border: 1px solid rgba(169, 152, 120, 0.12);
             position: relative;
-            height: 300px;
+            height: 280px;
         }
 
         .chart-title {
@@ -778,6 +687,12 @@
             text-transform: uppercase;
             margin-bottom: 15px;
             letter-spacing: 1px;
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
         }
 
         .history-section {
@@ -835,10 +750,33 @@
             font-size: 11px;
         }
 
+        .history-item-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
         .history-item-duration {
             font-weight: 600;
             color: #a99878;
-            margin-left: 10px;
+            min-width: 35px;
+            text-align: right;
+        }
+
+        .history-item-delete {
+            background: rgba(244, 67, 54, 0.1);
+            color: #f44336;
+            border: 1px solid rgba(244, 67, 54, 0.2);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .history-item-delete:hover {
+            background: rgba(244, 67, 54, 0.2);
+            border-color: #f44336;
         }
 
         .history-empty {
@@ -881,8 +819,11 @@
             .timer-display {
                 font-size: 56px;
             }
-            .stats-grid {
+            .button-group {
                 grid-template-columns: 1fr 1fr;
+            }
+            .btn-primary {
+                grid-column: 1 / -1;
             }
             .chart-container {
                 height: 250px;
@@ -896,7 +837,7 @@
             .timer-display {
                 font-size: 48px;
             }
-            .stats-grid {
+            .button-group {
                 grid-template-columns: 1fr;
             }
             .notification {
@@ -908,6 +849,9 @@
             .chart-container {
                 height: 200px;
             }
+            .history-item-right {
+                gap: 8px;
+            }
         }
     </style>
 </head>
@@ -918,7 +862,6 @@
 
         <div class="tabs">
             <button class="tab-btn active" data-tab="timer">Timer</button>
-            <button class="tab-btn" data-tab="today">Today</button>
             <button class="tab-btn" data-tab="analytics">Analytics</button>
         </div>
 
@@ -941,14 +884,13 @@
                     </select>
                 </div>
                 <div class="button-group">
-                    <button class="btn-primary" id="startBtn">Start Session</button>
                     <button class="btn-secondary" id="pauseBtn" style="display: none;">Pause</button>
                     <button class="btn-secondary" id="resetBtn">Reset</button>
+                    <button class="btn-primary" id="startBtn">Start Session</button>
+                    <button class="btn-danger" id="endBtn" style="display: none;">End & Save</button>
                 </div>
             </div>
-        </div>
-		
-        <div id="today" class="tab-content">
+
             <div class="history-section">
                 <div class="history-title">Today's Sessions</div>
                 <div class="history-list" id="historyList">
@@ -956,48 +898,31 @@
                 </div>
             </div>
         </div>
-		
+
         <div id="analytics" class="tab-content">
-            <div class="stats-section">
-                <div class="stats-title">Today's Stats</div>
-                <div class="stats-grid">
-                    <div class="stat-card">
-                        <div class="stat-value" id="totalSessions">0</div>
-                        <div class="stat-label">Sessions</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="totalMinutes">0</div>
-                        <div class="stat-label">Minutes</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="topCategory">—</div>
-                        <div class="stat-label">Top</div>
+            <div class="charts-grid">
+                <div>
+                    <div class="chart-title">Today by Category</div>
+                    <div class="chart-container">
+                        <canvas id="dayChart"></canvas>
                     </div>
                 </div>
-            </div>
 
-            <div class="stats-section">
-                <div class="chart-title">Category Breakdown</div>
-                <div class="chart-container">
-                    <canvas id="categoryChart"></canvas>
+                <div>
+                    <div class="chart-title">This Week by Category</div>
+                    <div class="chart-container">
+                        <canvas id="weekChart"></canvas>
+                    </div>
                 </div>
-            </div>
 
-            <div class="stats-section">
-                <div class="chart-title">Weekly Comparison</div>
-                <div class="chart-container">
-                    <canvas id="weeklyChart"></canvas>
-                </div>
-            </div>
-
-            <div class="stats-section">
-                <div class="chart-title">Monthly Trend</div>
-                <div class="chart-container">
-                    <canvas id="monthlyChart"></canvas>
+                <div>
+                    <div class="chart-title">This Month by Category</div>
+                    <div class="chart-container">
+                        <canvas id="monthChart"></canvas>
+                    </div>
                 </div>
             </div>
         </div>
-
     </div>
 </body>
 </html>
